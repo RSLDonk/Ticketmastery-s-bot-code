@@ -138,15 +138,6 @@ def init_db():
         UNIQUE(guild_id, user_id)
     )""")
 
-    c.execute("""CREATE TABLE IF NOT EXISTS ticket_staff_notes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id INTEGER,
-        channel_id INTEGER,
-        note_text TEXT,
-        created_by INTEGER,
-        created_at INTEGER
-    )""")
-
     c.execute("""CREATE TABLE IF NOT EXISTS closed_tickets_archive (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id INTEGER,
@@ -155,10 +146,7 @@ def init_db():
         num INTEGER,
         category_id INTEGER,
         closed_at INTEGER,
-        closed_by INTEGER,
-        reopen_requested INTEGER DEFAULT 0,
-        reopen_requested_by INTEGER DEFAULT NULL,
-        reopen_requested_at INTEGER DEFAULT NULL
+        closed_by INTEGER
     )""")
 
     # Add new columns to open_tickets if they don't exist
@@ -167,22 +155,9 @@ def init_db():
     
     if 'assigned_to' not in columns:
         c.execute("ALTER TABLE open_tickets ADD COLUMN assigned_to INTEGER DEFAULT NULL")
+    
     if 'category_id' not in columns:
         c.execute("ALTER TABLE open_tickets ADD COLUMN category_id INTEGER DEFAULT NULL")
-    if 'subject' not in columns:
-        c.execute("ALTER TABLE open_tickets ADD COLUMN subject TEXT DEFAULT ''")
-    if 'public' not in columns:
-        c.execute("ALTER TABLE open_tickets ADD COLUMN public INTEGER DEFAULT 0")
-
-    # Add reopen-vote columns to closed_tickets_archive if they don't exist
-    c.execute("PRAGMA table_info(closed_tickets_archive)")
-    archive_columns = [col[1] for col in c.fetchall()]
-    if 'reopen_requested' not in archive_columns:
-        c.execute("ALTER TABLE closed_tickets_archive ADD COLUMN reopen_requested INTEGER DEFAULT 0")
-    if 'reopen_requested_by' not in archive_columns:
-        c.execute("ALTER TABLE closed_tickets_archive ADD COLUMN reopen_requested_by INTEGER DEFAULT NULL")
-    if 'reopen_requested_at' not in archive_columns:
-        c.execute("ALTER TABLE closed_tickets_archive ADD COLUMN reopen_requested_at INTEGER DEFAULT NULL")
 
     conn.commit()
     conn.close()
@@ -337,9 +312,7 @@ def get_open_tickets(gid: int) -> Dict[str, Dict[str, Any]]:
             "reminded24": bool(row[6]),
             "hold": bool(row[7]),
             "assigned_to": row[8] if len(row) > 8 else None,
-            "category_id": row[9] if len(row) > 9 else None,
-            "subject": row[10] if len(row) > 10 else "",
-            "public": bool(row[11]) if len(row) > 11 else False
+            "category_id": row[9] if len(row) > 9 else None
         }
     return result
 
@@ -351,11 +324,11 @@ def set_open_tickets(gid: int, tickets: Dict[str, Dict[str, Any]]):
     # Insert new tickets
     for channel_id, info in tickets.items():
         c.execute('''INSERT INTO open_tickets 
-            (guild_id, channel_id, owner_id, num, created_at, last_activity, reminded24, hold, assigned_to, category_id, subject, public)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (guild_id, channel_id, owner_id, num, created_at, last_activity, reminded24, hold, assigned_to, category_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (gid, int(channel_id), info["owner_id"], info["num"], info["created_at"], 
              info["last_activity"], int(info.get("reminded24", 0)), int(info.get("hold", 0)),
-             info.get("assigned_to"), info.get("category_id"), info.get("subject", ""), int(info.get("public", False))))
+             info.get("assigned_to"), info.get("category_id")))
     conn.commit()
     conn.close()
 
@@ -379,21 +352,19 @@ def get_all_open_tickets() -> Dict[str, Dict[str, Dict[str, Any]]]:
             "reminded24": bool(row[6]),
             "hold": bool(row[7]),
             "assigned_to": row[8] if len(row) > 8 else None,
-            "category_id": row[9] if len(row) > 9 else None,
-            "subject": row[10] if len(row) > 10 else "",
-            "public": bool(row[11]) if len(row) > 11 else False
+            "category_id": row[9] if len(row) > 9 else None
         }
     return result
 
-def add_open_ticket(gid: int, channel_id: int, owner_id: int, num: int, category_id: int = None, subject: str = "", public: bool = False, assigned_to: int = None):
+def add_open_ticket(gid: int, channel_id: int, owner_id: int, num: int, category_id: int = None):
     now = int(time.time())
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('''
         INSERT OR REPLACE INTO open_tickets
-        (guild_id, channel_id, owner_id, num, created_at, last_activity, category_id, subject, public, assigned_to)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (gid, channel_id, owner_id, num, now, now, category_id, subject, int(public), assigned_to))
+        (guild_id, channel_id, owner_id, num, created_at, last_activity, category_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (gid, channel_id, owner_id, num, now, now, category_id))
     conn.commit()
     conn.close()
 
@@ -428,9 +399,7 @@ def get_open_ticket(gid: int, channel_id: int):
         "reminded24": bool(row[6]),
         "hold": bool(row[7]),
         "assigned_to": row[8] if len(row) > 8 else None,
-        "category_id": row[9] if len(row) > 9 else None,
-        "subject": row[10] if len(row) > 10 else "",
-        "public": bool(row[11]) if len(row) > 11 else False
+        "category_id": row[9] if len(row) > 9 else None
     }
 
 
@@ -456,9 +425,7 @@ def get_open_ticket_by_owner(gid: int, owner_id: int):
         "reminded24": bool(row[6]),
         "hold": bool(row[7]),
         "assigned_to": row[8] if len(row) > 8 else None,
-        "category_id": row[9] if len(row) > 9 else None,
-        "subject": row[10] if len(row) > 10 else "",
-        "public": bool(row[11]) if len(row) > 11 else False
+        "category_id": row[9] if len(row) > 9 else None
     }
 
 
@@ -572,96 +539,6 @@ def get_user_note(gid: int, user_id: int):
     if row:
         return {"text": row[0], "created_by": row[1], "created_at": row[2]}
     return None
-
-def add_ticket_staff_note(gid: int, channel_id: int, note_text: str, created_by: int):
-    """Save a private staff note for a ticket channel."""
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO ticket_staff_notes
-        (guild_id, channel_id, note_text, created_by, created_at)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (gid, channel_id, note_text, created_by, int(time.time())))
-    conn.commit()
-    conn.close()
-
-def get_ticket_staff_notes(gid: int, channel_id: int):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute(
-        "SELECT note_text, created_by, created_at FROM ticket_staff_notes WHERE guild_id=? AND channel_id=? ORDER BY created_at DESC",
-        (gid, channel_id)
-    )
-    rows = c.fetchall()
-    conn.close()
-    return [{"text": r[0], "created_by": r[1], "created_at": r[2]} for r in rows]
-
-
-def request_reopen_for_ticket(gid: int, owner_id: int, ticket_num: int, requester_id: int) -> bool:
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        UPDATE closed_tickets_archive
-        SET reopen_requested = 1,
-            reopen_requested_by = ?,
-            reopen_requested_at = ?
-        WHERE guild_id=? AND owner_id=? AND num=?
-    ''', (requester_id, int(time.time()), gid, owner_id, ticket_num))
-    conn.commit()
-    changed = c.rowcount > 0
-    conn.close()
-    return changed
-
-
-def get_reopen_request(gid: int, ticket_num: int):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        SELECT owner_id, reopen_requested, reopen_requested_by, reopen_requested_at
-        FROM closed_tickets_archive
-        WHERE guild_id=? AND num=?
-    ''', (gid, ticket_num))
-    row = c.fetchone()
-    conn.close()
-    if not row:
-        return None
-    return {
-        "owner_id": row[0],
-        "reopen_requested": bool(row[1]),
-        "reopen_requested_by": row[2],
-        "reopen_requested_at": row[3]
-    }
-
-
-def get_reopen_requests(gid: int):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        SELECT num, owner_id, reopen_requested_by, reopen_requested_at
-        FROM closed_tickets_archive
-        WHERE guild_id=? AND reopen_requested=1
-        ORDER BY reopen_requested_at DESC
-    ''', (gid,))
-    rows = c.fetchall()
-    conn.close()
-    return [{"num": r[0], "owner_id": r[1], "requested_by": r[2], "requested_at": r[3]} for r in rows]
-
-
-def clear_reopen_request(gid: int, ticket_num: int):
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute('''
-        UPDATE closed_tickets_archive
-        SET reopen_requested = 0,
-            reopen_requested_by = NULL,
-            reopen_requested_at = NULL
-        WHERE guild_id=? AND num=?
-    ''', (gid, ticket_num))
-    conn.commit()
-    changed = c.rowcount > 0
-    conn.close()
-    return changed
-
 
 def archive_closed_ticket(gid: int, channel_id: int, owner_id: int, num: int, category_id: int, closed_by: int):
     """Archive a closed ticket for potential reopening."""
@@ -789,15 +666,6 @@ def is_admin_or_owner(inter: discord.Interaction) -> bool:
     if isinstance(inter.user, discord.Member):
         return inter.user.guild_permissions.administrator
     return False
-
-def is_ticket_staff(inter: discord.Interaction) -> bool:
-    if is_admin_or_owner(inter):
-        return True
-    if not isinstance(inter.user, discord.Member):
-        return False
-    gcfg = get_gcfg(inter.guild.id)
-    staff_role_id = gcfg.get("staff_role_id")
-    return bool(staff_role_id and staff_role_id in [r.id for r in inter.user.roles])
 
 async def send_log(guild: discord.Guild, embed: discord.Embed, file: discord.File | None = None):
     gcfg = get_gcfg(guild.id)
@@ -952,167 +820,29 @@ class TicketButtons(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    def _is_staff(self, inter: discord.Interaction) -> bool:
-        if not inter.guild or not isinstance(inter.user, discord.Member):
-            return False
-        gcfg = get_gcfg(inter.guild.id)
-        staff_role_id = gcfg.get("staff_role_id")
-        if staff_role_id:
-            return staff_role_id in [r.id for r in inter.user.roles]
-        return True
-
-    @discord.ui.button(label="Claim/Unclaim", style=discord.ButtonStyle.blurple, custom_id="ticket_claim_btn")
+    @discord.ui.button(label="Claim", style=discord.ButtonStyle.blurple, custom_id="ticket_claim_btn")
     async def claim_btn(self, inter: discord.Interaction, button: discord.ui.Button):
         if not inter.guild:
             return
-
-        if not self._is_staff(inter):
-            return await inter.response.send_message("🚫 Only staff can claim or unclaim tickets.", ephemeral=True)
+        gcfg = get_gcfg(inter.guild.id)
+        staff_role_id = gcfg.get("staff_role_id")
+        if staff_role_id and isinstance(inter.user, discord.Member):
+            if staff_role_id not in [r.id for r in inter.user.roles]:
+                return await inter.response.send_message("🚫 Only staff can claim this ticket.", ephemeral=True)
 
         info = get_open_ticket(inter.guild.id, inter.channel.id)
         if not info:
             return await inter.response.send_message("❌ This isn't a ticket channel.", ephemeral=True)
 
-        assigned_to = info.get("assigned_to")
-        if assigned_to == inter.user.id:
-            unassign_ticket(inter.guild.id, inter.channel.id)
-            new_name = inter.channel.name
-            if new_name.startswith("claimed-"):
-                new_name = new_name[len("claimed-"):]
-            try:
-                await inter.channel.edit(name=new_name)
-            except Exception:
-                pass
-            await inter.response.send_message("✅ Ticket unassigned.", ephemeral=True)
-            e = discord.Embed(
-                title="🟡 Ticket Unassigned",
-                description=f"{inter.user.mention} unassigned the ticket in {inter.channel.mention}",
-                color=discord.Color.gold()
-            )
-            await send_log(inter.guild, e)
-            return
+        try:
+            await inter.channel.edit(name=f"claimed-{inter.channel.name}")
+        except Exception:
+            pass
 
-        previous = None
-        if assigned_to:
-            prev_member = inter.guild.get_member(assigned_to)
-            previous = prev_member.mention if prev_member else f"<@{assigned_to}>"
-
-        assign_ticket(inter.guild.id, inter.channel.id, inter.user.id)
-        new_name = inter.channel.name
-        if not new_name.startswith("claimed-"):
-            try:
-                await inter.channel.edit(name=f"claimed-{new_name}")
-            except Exception:
-                pass
-
-        if previous:
-            await inter.response.send_message(f"✅ Ticket reassigned from {previous} to {inter.user.mention}", ephemeral=True)
-        else:
-            await inter.response.send_message(f"✅ Ticket claimed by {inter.user.mention}", ephemeral=True)
-
-        e = discord.Embed(
-            title="🎟️ Ticket Claimed",
-            description=f"{inter.user.mention} claimed the ticket in {inter.channel.mention}",
-            color=discord.Color.green()
-        )
+        await inter.response.send_message(f"✅ Ticket claimed by {inter.user.mention}")
+        add_claim(inter.guild.id, inter.user.id)
+        e = discord.Embed(title="🎟️ Ticket Claimed", description=f"By {inter.user.mention} in {inter.channel.mention}", color=discord.Color.green())
         await send_log(inter.guild, e)
-
-    @discord.ui.button(label="Hold/Resume", style=discord.ButtonStyle.gray, custom_id="ticket_hold_toggle_btn")
-    async def hold_toggle_btn(self, inter: discord.Interaction, button: discord.ui.Button):
-        if not inter.guild:
-            return
-
-        if not self._is_staff(inter):
-            return await inter.response.send_message("🚫 Only staff can toggle hold on tickets.", ephemeral=True)
-
-        info = get_open_ticket(inter.guild.id, inter.channel.id)
-        if not info:
-            return await inter.response.send_message("❌ This isn't a ticket channel.", ephemeral=True)
-
-        new_hold = not bool(info.get("hold", False))
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute('''
-            UPDATE open_tickets
-            SET hold = ?
-            WHERE guild_id=? AND channel_id=?
-        ''', (int(new_hold), inter.guild.id, inter.channel.id))
-        conn.commit()
-        conn.close()
-
-        if new_hold:
-            await inter.response.send_message("⛔ Ticket is now on hold. Auto-close paused.", ephemeral=True)
-            title = "⛔ Ticket Put On Hold"
-            description = f"{inter.user.mention} put {inter.channel.mention} on hold."
-        else:
-            await inter.response.send_message("▶️ Ticket hold removed. Auto-close active.", ephemeral=True)
-            title = "▶️ Ticket Resume"
-            description = f"{inter.user.mention} removed hold from {inter.channel.mention}."
-
-        e = discord.Embed(title=title, description=description, color=discord.Color.orange())
-        await send_log(inter.guild, e)
-
-    @discord.ui.button(label="Staff Note", style=discord.ButtonStyle.green, custom_id="ticket_staffnote_btn")
-    async def staff_note_btn(self, inter: discord.Interaction, button: discord.ui.Button):
-        if not inter.guild:
-            return
-
-        if not self._is_staff(inter):
-            return await inter.response.send_message("🚫 Only staff can add private notes.", ephemeral=True)
-
-        class StaffNoteModal(discord.ui.Modal, title="Add Ticket Staff Note"):
-            note = discord.ui.TextInput(
-                label="Note",
-                style=discord.TextStyle.paragraph,
-                placeholder="Enter a private note for staff...",
-                required=True,
-                min_length=5,
-                max_length=800
-            )
-
-            def __init__(self, guild_id: int, channel_id: int, author_id: int):
-                super().__init__()
-                self.guild_id = guild_id
-                self.channel_id = channel_id
-                self.author_id = author_id
-
-            async def on_submit(self, modal_inter: discord.Interaction):
-                add_ticket_staff_note(self.guild_id, self.channel_id, self.note.value, self.author_id)
-                await modal_inter.response.send_message("✅ Staff note saved.", ephemeral=True)
-
-        await inter.response.send_modal(StaffNoteModal(inter.guild.id, inter.channel.id, inter.user.id))
-
-    @discord.ui.button(label="Info", style=discord.ButtonStyle.gray, custom_id="ticket_info_btn")
-    async def info_btn(self, inter: discord.Interaction, button: discord.ui.Button):
-        if not inter.guild:
-            return
-
-        info = get_open_ticket(inter.guild.id, inter.channel.id)
-        if not info:
-            return await inter.response.send_message("❌ This isn't a ticket channel.", ephemeral=True)
-
-        owner = inter.guild.get_member(info.get("owner_id"))
-        if not owner:
-            owner = await bot.fetch_user(info.get("owner_id"))
-        assigned_to = info.get("assigned_to")
-        assigned_member = inter.guild.get_member(assigned_to) if assigned_to else None
-        category = get_category(inter.guild.id, info.get("category_id")) if info.get("category_id") else None
-        notes = get_ticket_staff_notes(inter.guild.id, inter.channel.id)
-
-        embed = base_embed(
-            "📌 Ticket Info",
-            f"Ticket #{info.get('num', 'N/A')}",
-            discord.Color.blue()
-        )
-        embed.add_field(name="Owner", value=owner.mention if hasattr(owner, 'mention') else str(owner), inline=True)
-        embed.add_field(name="Assigned", value=assigned_member.mention if assigned_member else "Unassigned", inline=True)
-        embed.add_field(name="Subject", value=info.get("subject", "No subject"), inline=False)
-        embed.add_field(name="Category", value=category.get("name") if category else "Unspecified", inline=True)
-        embed.add_field(name="Hold", value="Yes" if info.get("hold") else "No", inline=True)
-        embed.add_field(name="Staff Notes", value=str(len(notes)), inline=True)
-        embed.add_field(name="Public", value="Yes" if info.get("public") else "No", inline=True)
-
-        await inter.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.red, custom_id="ticket_close_btn")
     async def close_btn(self, inter: discord.Interaction, button: discord.ui.Button):
@@ -1186,8 +916,7 @@ class TicketManager:
         guild: discord.Guild,
         user: discord.User,
         category_data: Dict[str, Any],
-        gcfg: Dict[str, Any],
-        subject: str = ""
+        gcfg: Dict[str, Any]
     ) -> Optional[discord.TextChannel]:
         """
         Create a new ticket channel safely with interaction guard.
@@ -1238,27 +967,18 @@ class TicketManager:
                         read_message_history=True
                     )
             
-            # Create channel with improved naming and subject topic
+            # Create channel with improved naming
             ch_name = TicketManager.build_ticket_channel_name(num, user.name)
             tchan = await guild.create_text_channel(
                 name=ch_name,
                 category=disc_cat,
                 overwrites=overwrites,
-                topic=f"Ticket subject: {subject}" if subject else None,
                 reason=f"Ticket #{num} opened by {user}"
             )
             
-            # Register ticket with category and subject
+            # Register ticket with category
             category_id = category_data.get("id")
-            add_open_ticket(
-                guild.id,
-                tchan.id,
-                user.id,
-                num,
-                category_id=category_id,
-                subject=subject,
-                public=False
-            )
+            add_open_ticket(guild.id, tchan.id, user.id, num, category_id=category_id)
             
             return tchan
         finally:
@@ -1392,59 +1112,6 @@ def build_panel_view(guild: discord.Guild):
     if not options:
         return view  # No categories, return empty view
 
-    class TicketSubjectModal(discord.ui.Modal, title="Ticket Summary"):
-        subject = discord.ui.TextInput(
-            label="Ticket subject",
-            style=discord.TextStyle.short,
-            placeholder="Summarize your request in one sentence",
-            min_length=5,
-            max_length=120,
-            required=True
-        )
-
-        def __init__(self, category: Dict[str, Any]):
-            super().__init__()
-            self.category = category
-
-        async def on_submit(self, modal_inter: discord.Interaction):
-            if not modal_inter.guild:
-                return await modal_inter.response.send_message("Guild only.", ephemeral=True)
-
-            await modal_inter.response.defer(thinking=True, ephemeral=True)
-            gcfg_local = get_gcfg(modal_inter.guild.id)
-
-            tchan = await TicketManager.create_ticket(
-                modal_inter,
-                modal_inter.guild,
-                modal_inter.user,
-                self.category,
-                gcfg_local,
-                subject=self.subject.value
-            )
-
-            if not tchan:
-                return await modal_inter.followup.send("❌ Failed to create ticket channel.", ephemeral=True)
-
-            ticket_creation_cooldowns[modal_inter.user.id] = int(time.time())
-            role_ping = ""
-            ping_role_id = self.category.get("role_id")
-            if ping_role_id:
-                role = modal_inter.guild.get_role(int(ping_role_id))
-                if role:
-                    role_ping = role.mention
-
-            embed = base_embed(
-                "🎫 Ticket Opened",
-                f"**Category:** {self.category['name']}\n**Subject:** {self.subject.value}\nUser: {modal_inter.user.mention}"
-            )
-            await tchan.send(
-                content=f"{modal_inter.user.mention} {role_ping}".strip(),
-                embed=embed,
-                view=TicketButtons()
-            )
-
-            await modal_inter.followup.send(f"✅ Ticket created: {tchan.mention}", ephemeral=True)
-
     # Create dropdown select
     class TicketSelect(discord.ui.Select):
         def __init__(self):
@@ -1478,7 +1145,40 @@ def build_panel_view(guild: discord.Guild):
                     ephemeral=True
                 )
 
-            await inter.response.send_modal(TicketSubjectModal(category))
+            await inter.response.defer(thinking=True, ephemeral=True)
+
+            gcfg_local = get_gcfg(inter.guild.id)
+            
+            tchan = await TicketManager.create_ticket(
+                inter,
+                inter.guild,
+                inter.user,
+                category,
+                gcfg_local
+            )
+
+            if not tchan:
+                return await inter.followup.send("❌ Failed to create ticket channel.", ephemeral=True)
+
+            ticket_creation_cooldowns[inter.user.id] = now
+            role_ping = ""
+            ping_role_id = category.get("role_id")
+            if ping_role_id:
+                role = inter.guild.get_role(int(ping_role_id))
+                if role:
+                    role_ping = role.mention
+
+            embed = base_embed(
+                "🎫 Ticket Opened",
+                f"**Category:** {category['name']}\nUser: {inter.user.mention}"
+            )
+            await tchan.send(
+                content=f"{inter.user.mention} {role_ping}".strip(),
+                embed=embed,
+                view=TicketButtons()
+            )
+
+            await inter.followup.send(f"✅ Ticket created: {tchan.mention}", ephemeral=True)
 
     view.add_item(TicketSelect())
     return view
