@@ -385,15 +385,15 @@ def get_all_open_tickets() -> Dict[str, Dict[str, Dict[str, Any]]]:
         }
     return result
 
-def add_open_ticket(gid: int, channel_id: int, owner_id: int, num: int, category_id: int = None, subject: str = "", public: bool = False):
+def add_open_ticket(gid: int, channel_id: int, owner_id: int, num: int, category_id: int = None, subject: str = "", public: bool = False, assigned_to: int = None):
     now = int(time.time())
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('''
         INSERT OR REPLACE INTO open_tickets
-        (guild_id, channel_id, owner_id, num, created_at, last_activity, category_id, subject, public)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (gid, channel_id, owner_id, num, now, now, category_id, subject, int(public)))
+        (guild_id, channel_id, owner_id, num, created_at, last_activity, category_id, subject, public, assigned_to)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (gid, channel_id, owner_id, num, now, now, category_id, subject, int(public), assigned_to))
     conn.commit()
     conn.close()
 
@@ -952,29 +952,167 @@ class TicketButtons(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Claim", style=discord.ButtonStyle.blurple, custom_id="ticket_claim_btn")
+    def _is_staff(self, inter: discord.Interaction) -> bool:
+        if not inter.guild or not isinstance(inter.user, discord.Member):
+            return False
+        gcfg = get_gcfg(inter.guild.id)
+        staff_role_id = gcfg.get("staff_role_id")
+        if staff_role_id:
+            return staff_role_id in [r.id for r in inter.user.roles]
+        return True
+
+    @discord.ui.button(label="Claim/Unclaim", style=discord.ButtonStyle.blurple, custom_id="ticket_claim_btn")
     async def claim_btn(self, inter: discord.Interaction, button: discord.ui.Button):
         if not inter.guild:
             return
-        gcfg = get_gcfg(inter.guild.id)
-        staff_role_id = gcfg.get("staff_role_id")
-        if staff_role_id and isinstance(inter.user, discord.Member):
-            if staff_role_id not in [r.id for r in inter.user.roles]:
-                return await inter.response.send_message("🚫 Only staff can claim this ticket.", ephemeral=True)
+
+        if not self._is_staff(inter):
+            return await inter.response.send_message("🚫 Only staff can claim or unclaim tickets.", ephemeral=True)
 
         info = get_open_ticket(inter.guild.id, inter.channel.id)
         if not info:
             return await inter.response.send_message("❌ This isn't a ticket channel.", ephemeral=True)
 
-        try:
-            await inter.channel.edit(name=f"claimed-{inter.channel.name}")
-        except Exception:
-            pass
+        assigned_to = info.get("assigned_to")
+        if assigned_to == inter.user.id:
+            unassign_ticket(inter.guild.id, inter.channel.id)
+            new_name = inter.channel.name
+            if new_name.startswith("claimed-"):
+                new_name = new_name[len("claimed-"):]
+            try:
+                await inter.channel.edit(name=new_name)
+            except Exception:
+                pass
+            await inter.response.send_message("✅ Ticket unassigned.", ephemeral=True)
+            e = discord.Embed(
+                title="🟡 Ticket Unassigned",
+                description=f"{inter.user.mention} unassigned the ticket in {inter.channel.mention}",
+                color=discord.Color.gold()
+            )
+            await send_log(inter.guild, e)
+            return
 
-        await inter.response.send_message(f"✅ Ticket claimed by {inter.user.mention}")
-        add_claim(inter.guild.id, inter.user.id)
-        e = discord.Embed(title="🎟️ Ticket Claimed", description=f"By {inter.user.mention} in {inter.channel.mention}", color=discord.Color.green())
+        previous = None
+        if assigned_to:
+            prev_member = inter.guild.get_member(assigned_to)
+            previous = prev_member.mention if prev_member else f"<@{assigned_to}>"
+
+        assign_ticket(inter.guild.id, inter.channel.id, inter.user.id)
+        new_name = inter.channel.name
+        if not new_name.startswith("claimed-"):
+            try:
+                await inter.channel.edit(name=f"claimed-{new_name}")
+            except Exception:
+                pass
+
+        if previous:
+            await inter.response.send_message(f"✅ Ticket reassigned from {previous} to {inter.user.mention}", ephemeral=True)
+        else:
+            await inter.response.send_message(f"✅ Ticket claimed by {inter.user.mention}", ephemeral=True)
+
+        e = discord.Embed(
+            title="🎟️ Ticket Claimed",
+            description=f"{inter.user.mention} claimed the ticket in {inter.channel.mention}",
+            color=discord.Color.green()
+        )
         await send_log(inter.guild, e)
+
+    @discord.ui.button(label="Hold/Resume", style=discord.ButtonStyle.gray, custom_id="ticket_hold_toggle_btn")
+    async def hold_toggle_btn(self, inter: discord.Interaction, button: discord.ui.Button):
+        if not inter.guild:
+            return
+
+        if not self._is_staff(inter):
+            return await inter.response.send_message("🚫 Only staff can toggle hold on tickets.", ephemeral=True)
+
+        info = get_open_ticket(inter.guild.id, inter.channel.id)
+        if not info:
+            return await inter.response.send_message("❌ This isn't a ticket channel.", ephemeral=True)
+
+        new_hold = not bool(info.get("hold", False))
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('''
+            UPDATE open_tickets
+            SET hold = ?
+            WHERE guild_id=? AND channel_id=?
+        ''', (int(new_hold), inter.guild.id, inter.channel.id))
+        conn.commit()
+        conn.close()
+
+        if new_hold:
+            await inter.response.send_message("⛔ Ticket is now on hold. Auto-close paused.", ephemeral=True)
+            title = "⛔ Ticket Put On Hold"
+            description = f"{inter.user.mention} put {inter.channel.mention} on hold."
+        else:
+            await inter.response.send_message("▶️ Ticket hold removed. Auto-close active.", ephemeral=True)
+            title = "▶️ Ticket Resume"
+            description = f"{inter.user.mention} removed hold from {inter.channel.mention}."
+
+        e = discord.Embed(title=title, description=description, color=discord.Color.orange())
+        await send_log(inter.guild, e)
+
+    @discord.ui.button(label="Staff Note", style=discord.ButtonStyle.green, custom_id="ticket_staffnote_btn")
+    async def staff_note_btn(self, inter: discord.Interaction, button: discord.ui.Button):
+        if not inter.guild:
+            return
+
+        if not self._is_staff(inter):
+            return await inter.response.send_message("🚫 Only staff can add private notes.", ephemeral=True)
+
+        class StaffNoteModal(discord.ui.Modal, title="Add Ticket Staff Note"):
+            note = discord.ui.TextInput(
+                label="Note",
+                style=discord.TextStyle.paragraph,
+                placeholder="Enter a private note for staff...",
+                required=True,
+                min_length=5,
+                max_length=800
+            )
+
+            def __init__(self, guild_id: int, channel_id: int, author_id: int):
+                super().__init__()
+                self.guild_id = guild_id
+                self.channel_id = channel_id
+                self.author_id = author_id
+
+            async def on_submit(self, modal_inter: discord.Interaction):
+                add_ticket_staff_note(self.guild_id, self.channel_id, self.note.value, self.author_id)
+                await modal_inter.response.send_message("✅ Staff note saved.", ephemeral=True)
+
+        await inter.response.send_modal(StaffNoteModal(inter.guild.id, inter.channel.id, inter.user.id))
+
+    @discord.ui.button(label="Info", style=discord.ButtonStyle.gray, custom_id="ticket_info_btn")
+    async def info_btn(self, inter: discord.Interaction, button: discord.ui.Button):
+        if not inter.guild:
+            return
+
+        info = get_open_ticket(inter.guild.id, inter.channel.id)
+        if not info:
+            return await inter.response.send_message("❌ This isn't a ticket channel.", ephemeral=True)
+
+        owner = inter.guild.get_member(info.get("owner_id"))
+        if not owner:
+            owner = await bot.fetch_user(info.get("owner_id"))
+        assigned_to = info.get("assigned_to")
+        assigned_member = inter.guild.get_member(assigned_to) if assigned_to else None
+        category = get_category(inter.guild.id, info.get("category_id")) if info.get("category_id") else None
+        notes = get_ticket_staff_notes(inter.guild.id, inter.channel.id)
+
+        embed = base_embed(
+            "📌 Ticket Info",
+            f"Ticket #{info.get('num', 'N/A')}",
+            discord.Color.blue()
+        )
+        embed.add_field(name="Owner", value=owner.mention if hasattr(owner, 'mention') else str(owner), inline=True)
+        embed.add_field(name="Assigned", value=assigned_member.mention if assigned_member else "Unassigned", inline=True)
+        embed.add_field(name="Subject", value=info.get("subject", "No subject"), inline=False)
+        embed.add_field(name="Category", value=category.get("name") if category else "Unspecified", inline=True)
+        embed.add_field(name="Hold", value="Yes" if info.get("hold") else "No", inline=True)
+        embed.add_field(name="Staff Notes", value=str(len(notes)), inline=True)
+        embed.add_field(name="Public", value="Yes" if info.get("public") else "No", inline=True)
+
+        await inter.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.red, custom_id="ticket_close_btn")
     async def close_btn(self, inter: discord.Interaction, button: discord.ui.Button):
