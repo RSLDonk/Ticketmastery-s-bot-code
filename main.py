@@ -10,7 +10,6 @@ from discord import app_commands
 # ---------- ENV ----------
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or ""
-OWNER_ID = 720061069628014652  # your override ID (admin bypass for setup)
 
 # ---------- CONSTANTS ----------
 BLUE = discord.Color.blurple()
